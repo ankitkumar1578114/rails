@@ -12,6 +12,10 @@
       "dest": "api/index.py"
     },
     {
+      "src": "/v2/status",
+      "dest": "api/index.py"
+    },
+    {
       "src": "/stations",
       "dest": "api/index.py"
     },

@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from fetch_live_status import fetch_train_status
+from api.sources.redbus import RedbusTrainStatusProvider
 
 app = FastAPI(
     title="Live Train Status API",
@@ -51,6 +52,30 @@ def get_live_status(
         raise HTTPException(status_code=500, detail=f"Failed to fetch live status: {exc}")
 
 
+@app.get("/v2/status")
+def get_v2_status(
+    request: Request,
+    train: Optional[str] = Query(None, description="Primary train number query parameter"),
+    train_no: Optional[str] = Query(None, alias="train_no", description="Alternative train number query parameter"),
+    date: Optional[str] = Query(None, alias="date", description="Optional date parameter in format 11-Jun-2026"),
+):
+    train_no_value = (train or train_no or "").strip()
+    if not train_no_value:
+        raise HTTPException(status_code=400, detail="Missing required query parameter: train or train_no")
+
+    date_value = request.query_params.get("Date") or date
+    if date_value:
+        date_value = date_value.strip()
+
+    try:
+        provider = RedbusTrainStatusProvider()
+        live_status = provider.fetch(train_no_value)
+        metadata = fetch_train_metadata(train_no_value)
+        return merge_live_with_metadata(live_status, metadata)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch v2 status: {exc}")
+
+
 def get_db_connection():
     return mysql.connector.connect(
         # host="127.0.0.1",
@@ -62,6 +87,67 @@ def get_db_connection():
         password = "8CJNC9GDRkkpe5kPvzJw",
         database = "bwr2tjeeysysm7um7pfo"
     )
+
+
+def parse_json_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def fetch_train_metadata(train_no: str) -> Optional[Dict[str, Any]]:
+    query = """
+        SELECT *
+        FROM trains
+        WHERE train_number_string = %s OR train_no = %s
+        LIMIT 1
+    """
+    with get_db_connection() as conn:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(query, (train_no, train_no))
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            row["days_of_run"] = parse_json_value(row.get("days_of_run") or row.get("DaysOfRun"))
+            row["classes"] = parse_json_value(row.get("classes") or row.get("Classes"))
+            row["schedule"] = parse_json_value(row.get("schedule") or row.get("Schedule"))
+            return row
+
+
+def merge_live_with_metadata(live_status: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if metadata is None:
+        return live_status
+
+    merged = live_status.copy()
+    fallback_fields = [
+        "train_name",
+        "train_number_string",
+        "train_type",
+        "source_station",
+        "source_code",
+        "destination",
+        "destination_code",
+        "days_of_run",
+        "classes",
+        "schedule",
+        "total_duration",
+        "total_distance",
+        "total_number_of_stops",
+    ]
+
+    for field in fallback_fields:
+        if not merged.get(field) and metadata.get(field) is not None:
+            merged[field] = metadata.get(field)
+
+    if not merged.get("train_no") and metadata.get("train_number_string"):
+        merged["train_no"] = str(metadata.get("train_number_string"))
+    return merged
 
 
 def fetch_stations_by_code(code: str) -> List[Dict[str, Any]]:
@@ -96,9 +182,9 @@ def fetch_stations_by_name(name: str) -> List[Dict[str, Any]]:
 def fetch_trains_by_query(query_value: str) -> List[Dict[str, Any]]:
     query = """
         SELECT *
-        FROM trains_data
-        WHERE train_number LIKE %s
-           OR name LIKE %s
+        FROM trains
+        WHERE train_number_string LIKE %s
+           OR train_name LIKE %s
         LIMIT 5
     """
     like_value = f"%{query_value}%"
@@ -157,7 +243,12 @@ def route_has_station_order(route: List[Any], from_station: str, to_station: str
 
     for idx, station in enumerate(route):
         if isinstance(station, dict):
-            code = station.get("stationCode") or station.get("station_code") or station.get("code")
+            code = (
+                station.get("StationCode")
+                or station.get("stationCode")
+                or station.get("station_code")
+                or station.get("code")
+            )
         else:
             code = station
         normalized = normalize_station_code(code)
@@ -179,7 +270,7 @@ def fetch_trains_between(from_station: str, to_station: str) -> List[Dict[str, A
         return []
 
     placeholders = ",".join(["%s"] * len(common_trains))
-    query = f"SELECT * FROM trains_data WHERE train_number IN ({placeholders})"
+    query = f"SELECT * FROM trains WHERE train_number_string IN ({placeholders})"
     with get_db_connection() as conn:
         with conn.cursor(dictionary=True) as cursor:
             cursor.execute(query, tuple(common_trains))
@@ -187,8 +278,8 @@ def fetch_trains_between(from_station: str, to_station: str) -> List[Dict[str, A
 
     filtered_rows: List[Dict[str, Any]] = []
     for row in rows:
-        route = parse_json_list(row.get("route"))
-        if route_has_station_order(route, from_station, to_station):
+        schedule = parse_json_list(row.get("Schedule") or row.get("schedule"))
+        if route_has_station_order(schedule, from_station, to_station):
             filtered_rows.append(row)
 
     return filtered_rows
