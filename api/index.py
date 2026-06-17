@@ -9,12 +9,14 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 import mysql.connector
+import requests
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from fetch_live_status import fetch_train_status
 from api.sources.redbus import RedbusTrainStatusProvider
+from api.sources.whereismytrain import fetch_whereismytrain_status
 
 app = FastAPI(
     title="Live Train Status API",
@@ -52,6 +54,97 @@ def get_live_status(
         raise HTTPException(status_code=500, detail=f"Failed to fetch live status: {exc}")
 
 
+def compute_current_location(schedule: Any,provider_current_distance: Any, current_distance: Any,) -> Dict[str, Any]:
+    if isinstance(schedule, str):
+        try:
+            schedule = json.loads(schedule)
+        except json.JSONDecodeError:
+            schedule = []
+    main_source = "custom"
+    if(provider_current_distance > current_distance ):
+        current_distance = provider_current_distance
+        main_source = "provider"
+
+    if not isinstance(schedule, list):
+        schedule = []
+
+    def parse_distance(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            digits = "".join(ch for ch in value if ch.isdigit() or ch == ".")
+            try:
+                return float(digits) if digits else None
+            except ValueError:
+                return None
+        return None
+
+    try:
+        current_distance_value = float(parse_distance(current_distance) or 0)
+    except (TypeError, ValueError):
+        return {
+            "currentStation": None,
+            "upcomingStation": None,
+            "upcomingStationInKms": None,
+        }
+    
+
+    stations = []
+    for item in schedule:
+        if not isinstance(item, dict):
+            continue
+
+        station_distance = item.get("distance_from_origin") or item.get("distance")
+        station_distance_value = parse_distance(station_distance)
+        station_code = item.get("station_code") or item.get("stationCode") or item.get("StationCode")
+
+        if station_distance_value is not None and station_code:
+            stations.append({"code": station_code, "distance": station_distance_value})
+
+        intermediate = item.get("intermediate_stations") or item.get("intermediateStations") or []
+        for inter in intermediate:
+            if isinstance(inter, dict):
+                inter_distance = inter.get("distance_from_origin") or inter.get("distance")
+                inter_distance_value = parse_distance(inter_distance)
+                inter_code = inter.get("station_code") or inter.get("stationCode") or inter.get("StationCode")
+                if inter_distance_value is not None and inter_code:
+                    stations.append({"code": inter_code, "distance": inter_distance_value})
+
+    stations.sort(key=lambda x: x["distance"])
+
+    current_station = None
+    upcoming_station = None
+    upcoming_kms = None
+    upcoming_station_idx = 0
+
+    for index, station in enumerate(stations):
+        if station["distance"] > current_distance_value:
+            upcoming_station = station["code"]
+            upcoming_station_idx = index
+            upcoming_kms = station["distance"] - current_distance_value
+            if index > 0:
+                current_station = stations[index - 1]["code"]
+            break
+
+    if current_station is None and stations:
+        current_station = stations[len(stations) -1]["code"]
+
+    if upcoming_kms is not None:
+        upcoming_kms = int(upcoming_kms)
+        if upcoming_kms < 2:
+            current_station = upcoming_station
+            upcoming_station = stations[upcoming_station_idx + 1]["code"] if upcoming_station_idx + 1 < len(stations) else None   
+            upcoming_kms = int(stations[upcoming_station_idx + 1]["distance"] - current_distance_value) if upcoming_station_idx + 1 < len(stations) else None
+    return {
+        "currentStation": current_station,
+        "upcomingStation": upcoming_station,
+        "upcomingStationInKms": upcoming_kms,
+        "main_source": main_source,
+    }
+
+
 @app.get("/v2/status")
 def get_v2_status(
     request: Request,
@@ -69,11 +162,43 @@ def get_v2_status(
 
     try:
         provider = RedbusTrainStatusProvider()
-        live_status = provider.fetch(train_no_value)
+        live_status = provider.fetch(train_no_value, date_value)
         metadata = fetch_train_metadata(train_no_value)
-        return merge_live_with_metadata(live_status, metadata)
+        status_data = fetch_whereismytrain_status(train_no_value, date_value)
+        result = merge_live_with_metadata(live_status, metadata)
+
+        providerCurrStationCode = live_status.get("station_status").get("currently_at_code")
+        providerCurrStationDistance = getStationFromSchedule(result.get("schedule"), providerCurrStationCode).get("origin_dst") if providerCurrStationCode else None
+        result["live_train_status"] = compute_current_location(result.get("schedule"), providerCurrStationDistance if providerCurrStationDistance else 0 , status_data.get("distance") if status_data.get("distance") else 0 )
+        return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch v2 status: {exc}")
+    
+def getStationFromSchedule(schedule: Any, station_code: str) -> Optional[Dict[str, Any]]:   
+    if isinstance(schedule, str):
+        try:
+            schedule = json.loads(schedule)
+        except json.JSONDecodeError:
+            return None
+
+    if not isinstance(schedule, list):
+        return None
+
+    for item in schedule:
+        if not isinstance(item, dict):
+            continue
+
+        code = item.get("station_code") or item.get("stationCode") or item.get("StationCode")
+        if code and code.strip().upper() == station_code.strip().upper():
+            return item
+
+        intermediate = item.get("intermediate_stations") or item.get("intermediateStations") or []
+        for inter in intermediate:
+            if isinstance(inter, dict):
+                inter_code = inter.get("station_code") or inter.get("stationCode") or inter.get("StationCode")
+                if inter_code and inter_code.strip().upper() == station_code.strip().upper():
+                    return inter
+    return None
 
 
 def get_db_connection():

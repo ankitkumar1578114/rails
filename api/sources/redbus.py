@@ -12,7 +12,7 @@ class RedbusTrainStatusProvider(TrainStatusProvider):
             "station_name": station.get("stationName") or station.get("StationName") or None,
             "station_code": station.get("stationCode") or station.get("StationCode") or None,
             "distance_from_origin": station.get("distanceFromOrigin") or station.get("DistanceFromOrigin") or None,
-            "origin_dst": station.get("originDst") or station.get("originDst") or None,
+            "origin_dst": station.get("originDst") or station.get("originDst") or 0,
             "platform": station.get("platform") or station.get("Platform") or None,
             "scheduled_arrival_time": station.get("scheduledArrivalTime") or station.get("ScheduledArrivalTime") or None,
             "arrival_time": station.get("arrivalTime") or station.get("ArrivalTime") or None,
@@ -91,9 +91,13 @@ class RedbusTrainStatusProvider(TrainStatusProvider):
             "destination_code": None,
         }
 
-    def fetch(self, train_no: str, **kwargs: Any) -> Dict[str, Any]:
+    def fetch(self, train_no: str, doj:str,  **kwargs: Any) -> Dict[str, Any]:
+        def convert_date(date_str):
+            day, month, year = date_str.split('-')
+            return f"{year}{month}{day}"
+
         api_url = "https://www.redbus.in/railways/api/getLtsDetails"
-        response = requests.get(api_url, params={"trainNo": train_no}, timeout=30)
+        response = requests.get(api_url, params={"trainNo": train_no, "doj":convert_date(doj)}, timeout=30)
         response.raise_for_status()
         raw = response.json()
 
