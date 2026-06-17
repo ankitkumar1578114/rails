@@ -168,7 +168,7 @@ def get_v2_status(
         result = merge_live_with_metadata(live_status, metadata)
 
         providerCurrStationCode = live_status.get("station_status").get("currently_at_code")
-        providerCurrStationDistance = getStationFromSchedule(result.get("schedule"), providerCurrStationCode).get("origin_dst") if providerCurrStationCode else None
+        providerCurrStationDistance = getStationFromSchedule(result.get("schedule"), providerCurrStationCode).get("originDst") if providerCurrStationCode else None
         result["live_train_status"] = compute_current_location(result.get("schedule"), providerCurrStationDistance if providerCurrStationDistance else 0 , status_data.get("distance") if status_data.get("distance") else 0 )
         return result
     except Exception as exc:
@@ -203,14 +203,14 @@ def getStationFromSchedule(schedule: Any, station_code: str) -> Optional[Dict[st
 
 def get_db_connection():
     return mysql.connector.connect(
-        host="127.0.0.1",
-        user="root",
-        password="",
-        database="mydb",
-        # host = "bwr2tjeeysysm7um7pfo-mysql.services.clever-cloud.com",
-        # user = "ucg3v1n4o6kbgzk2",
-        # password = "8CJNC9GDRkkpe5kPvzJw",
-        # database = "bwr2tjeeysysm7um7pfo"
+        # host="127.0.0.1",
+        # user="root",
+        # password="",
+        # database="mydb",
+        host = "bwr2tjeeysysm7um7pfo-mysql.services.clever-cloud.com",
+        user = "ucg3v1n4o6kbgzk2",
+        password = "8CJNC9GDRkkpe5kPvzJw",
+        database = "bwr2tjeeysysm7um7pfo"
     )
 
 
