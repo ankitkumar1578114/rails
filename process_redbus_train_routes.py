@@ -24,12 +24,12 @@ def get_db_connection(host: str, user: str, password: str, database: str):
 def ensure_route_column(conn) -> None:
     with conn.cursor() as cursor:
         try:
-            cursor.execute("ALTER TABLE trains_data ADD COLUMN route JSON NULL")
+            cursor.execute("ALTER TABLE trains ADD COLUMN route JSON NULL")
             conn.commit()
-            print("Added trains_data.route column")
+            print("Added trains.route column")
         except mysql.connector.Error as exc:
             if exc.errno == 1060:
-                print("trains_data.route already exists")
+                print("trains.route already exists")
             else:
                 raise
 
@@ -117,7 +117,7 @@ def bulk_update_routes(conn, batch: List[tuple]) -> int:
         return 0
     with conn.cursor() as cursor:
         cursor.executemany(
-            "UPDATE trains_data SET route = %s WHERE train_number = %s",
+            "UPDATE trains SET schedule = %s WHERE train_no = %s",
             batch,
         )
         conn.commit()
@@ -125,7 +125,7 @@ def bulk_update_routes(conn, batch: List[tuple]) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Import RedBus route station arrays into trains_data.route")
+    parser = argparse.ArgumentParser(description="Import RedBus route station arrays into trains.route")
     parser.add_argument("--input", default=INPUT_CSV, help="CSV file containing RedBus train responses")
     parser.add_argument("--host", default=DB_CONFIG["host"], help="MySQL host")
     parser.add_argument("--user", default=DB_CONFIG["user"], help="MySQL user")
@@ -158,7 +158,7 @@ def main() -> None:
     finally:
         conn.close()
 
-    print(f"Done importing route data into trains_data. Processed {processed} rows, updated {updated_rows} trains.")
+    print(f"Done importing route data into trains. Processed {processed} rows, updated {updated_rows} trains.")
 
 
 if __name__ == "__main__":

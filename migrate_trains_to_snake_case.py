@@ -2,9 +2,10 @@
 import argparse
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import mysql.connector
+from mysql.connector.errors import OperationalError
 
 DB_CONFIG = {
     "host": "127.0.0.1",
@@ -83,10 +84,14 @@ def ensure_target_table(conn) -> None:
         conn.commit()
 
 
-def read_source_rows(conn) -> List[Dict[str, Any]]:
+def iter_source_rows(conn, batch_size: int = 100) -> Iterator[List[Dict[str, Any]]]:
     with conn.cursor(dictionary=True) as cursor:
         cursor.execute("SELECT * FROM trains")
-        return cursor.fetchall()
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                break
+            yield batch
 
 
 def build_target_row(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -138,8 +143,16 @@ def upsert_target_rows(conn, rows: List[Dict[str, Any]]) -> None:
     insert_columns = ", ".join(columns)
     update_clause = ", ".join([f"{col}=VALUES({col})" for col in columns if col != "id"])
     sql = f"INSERT INTO trains_snake ({insert_columns}) VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {update_clause}"
+
     with conn.cursor() as cursor:
-        cursor.executemany(sql, rows)
+        try:
+            cursor.executemany(sql, rows)
+        except OperationalError as exc:
+            if exc.errno != 1153:
+                raise
+            # Fall back to one row at a time if the batch payload is too large.
+            for row in rows:
+                cursor.execute(sql, row)
         conn.commit()
 
 
@@ -149,18 +162,29 @@ def main() -> None:
     parser.add_argument("--user", default=DB_CONFIG["user"], help="MySQL user")
     parser.add_argument("--password", default=DB_CONFIG["password"], help="MySQL password")
     parser.add_argument("--database", default=DB_CONFIG["database"], help="MySQL database")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=25,
+        help="Number of rows to process per chunk to avoid large packets",
+    )
     args = parser.parse_args()
 
-    with get_db_connection(args.host, args.user, args.password, args.database) as conn:
-        ensure_target_table(conn)
-        source_rows = read_source_rows(conn)
-        if not source_rows:
-            print("No rows found in trains table.")
-            return
+    if args.batch_size <= 0:
+        raise SystemExit("--batch-size must be greater than 0")
 
-        target_rows = [build_target_row(row) for row in source_rows]
-        upsert_target_rows(conn, target_rows)
-        print(f"Migrated {len(target_rows)} rows from trains to trains_snake.")
+    with get_db_connection(args.host, args.user, args.password, args.database) as read_conn, \
+         get_db_connection(args.host, args.user, args.password, args.database) as write_conn:
+        ensure_target_table(write_conn)
+
+        total_migrated = 0
+        for batch in iter_source_rows(read_conn, batch_size=args.batch_size):
+            target_rows = [build_target_row(row) for row in batch]
+            upsert_target_rows(write_conn, target_rows)
+            total_migrated += len(target_rows)
+            print(f"Migrated {total_migrated} rows so far...")
+
+        print(f"Finished migrating {total_migrated} rows from trains to trains_snake.")
 
 
 if __name__ == "__main__":

@@ -96,7 +96,7 @@ def compute_current_location(schedule: Any,provider_current_distance: Any, curre
         if not isinstance(item, dict):
             continue
 
-        station_distance = item.get("distance_from_origin") or item.get("distance")
+        station_distance = item.get("distance_from_origin") or item.get("distance") or item.get("distanceFromOrigin")
         station_distance_value = parse_distance(station_distance)
         station_code = item.get("station_code") or item.get("stationCode") or item.get("StationCode")
 
@@ -203,14 +203,14 @@ def getStationFromSchedule(schedule: Any, station_code: str) -> Optional[Dict[st
 
 def get_db_connection():
     return mysql.connector.connect(
-        # host="127.0.0.1",
-        # user="root",
-        # password="",
-        # database="mydb",
-        host = "bwr2tjeeysysm7um7pfo-mysql.services.clever-cloud.com",
-        user = "ucg3v1n4o6kbgzk2",
-        password = "8CJNC9GDRkkpe5kPvzJw",
-        database = "bwr2tjeeysysm7um7pfo"
+        host="127.0.0.1",
+        user="root",
+        password="",
+        database="mydb",
+        # host = "bwr2tjeeysysm7um7pfo-mysql.services.clever-cloud.com",
+        # user = "ucg3v1n4o6kbgzk2",
+        # password = "8CJNC9GDRkkpe5kPvzJw",
+        # database = "bwr2tjeeysysm7um7pfo"
     )
 
 
@@ -260,7 +260,6 @@ def merge_live_with_metadata(live_status: Dict[str, Any], metadata: Optional[Dic
         "destination_code",
         "days_of_run",
         "classes",
-        "schedule",
         "total_duration",
         "total_distance",
         "total_number_of_stops",
@@ -272,6 +271,7 @@ def merge_live_with_metadata(live_status: Dict[str, Any], metadata: Optional[Dic
 
     if not merged.get("train_no") and metadata.get("train_number_string"):
         merged["train_no"] = str(metadata.get("train_number_string"))
+    merged["schedule"] = metadata.get("schedule") or merged.get("schedule") or None
     return merged
 
 
