@@ -17,6 +17,7 @@ import uvicorn
 from fetch_live_status import fetch_train_status
 from api.sources.redbus import RedbusTrainStatusProvider
 from api.sources.whereismytrain import fetch_whereismytrain_status
+from api.helper import getNonIntermediateStaionFromSchedule, getStationFromSchedule
 
 app = FastAPI(
     title="Live Train Status API",
@@ -106,13 +107,12 @@ def compute_current_location(schedule: Any,provider_current_distance: Any, curre
         intermediate = item.get("intermediate_stations") or item.get("intermediateStations") or []
         for inter in intermediate:
             if isinstance(inter, dict):
-                inter_distance = inter.get("distance_from_origin") or inter.get("distance")
+                inter_distance = inter.get("distanceFromOrigin") or inter.get("distance")
                 inter_distance_value = parse_distance(inter_distance)
                 inter_code = inter.get("station_code") or inter.get("stationCode") or inter.get("StationCode")
                 if inter_distance_value is not None and inter_code:
                     stations.append({"code": inter_code, "distance": inter_distance_value})
 
-    stations.sort(key=lambda x: x["distance"])
 
     current_station = None
     upcoming_station = None
@@ -131,6 +131,13 @@ def compute_current_location(schedule: Any,provider_current_distance: Any, curre
     if current_station is None and stations:
         current_station = stations[len(stations) -1]["code"]
 
+    if(current_distance == 0):
+        return {
+            "currentStation": stations[0]["code"] if stations else None,
+            "upcomingStation": stations[1]["code"] if stations else None,
+            "upcomingStationInKms": stations[1]["distance"] if stations else None,
+        }
+
     if upcoming_kms is not None:
         upcoming_kms = int(upcoming_kms)
         if upcoming_kms < 2:
@@ -140,7 +147,7 @@ def compute_current_location(schedule: Any,provider_current_distance: Any, curre
     return {
         "currentStation": current_station,
         "upcomingStation": upcoming_station,
-        "upcomingStationInKms": upcoming_kms,
+        "upcomingStationInKms": upcoming_kms if upcoming_kms is not None else 0,
         "main_source": main_source,
     }
 
@@ -168,37 +175,14 @@ def get_v2_status(
         result = merge_live_with_metadata(live_status, metadata)
 
         providerCurrStationCode = live_status.get("station_status").get("currently_at_code")
-        providerCurrStationDistance = getStationFromSchedule(result.get("schedule"), providerCurrStationCode).get("originDst") if providerCurrStationCode else None
+        providerCurrStation = getStationFromSchedule(result.get("schedule"), providerCurrStationCode) if providerCurrStationCode else None
+        providerCurrStationDistance = providerCurrStation.get("originDst") if providerCurrStation else None
         result["live_train_status"] = compute_current_location(result.get("schedule"), providerCurrStationDistance if providerCurrStationDistance else 0 , status_data.get("distance") if status_data.get("distance") else 0 )
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch v2 status: {exc}")
     
-def getStationFromSchedule(schedule: Any, station_code: str) -> Optional[Dict[str, Any]]:   
-    if isinstance(schedule, str):
-        try:
-            schedule = json.loads(schedule)
-        except json.JSONDecodeError:
-            return None
 
-    if not isinstance(schedule, list):
-        return None
-
-    for item in schedule:
-        if not isinstance(item, dict):
-            continue
-
-        code = item.get("station_code") or item.get("stationCode") or item.get("StationCode")
-        if code and code.strip().upper() == station_code.strip().upper():
-            return item
-
-        intermediate = item.get("intermediate_stations") or item.get("intermediateStations") or []
-        for inter in intermediate:
-            if isinstance(inter, dict):
-                inter_code = inter.get("station_code") or inter.get("stationCode") or inter.get("StationCode")
-                if inter_code and inter_code.strip().upper() == station_code.strip().upper():
-                    return inter
-    return None
 
 
 def get_db_connection():
@@ -271,7 +255,14 @@ def merge_live_with_metadata(live_status: Dict[str, Any], metadata: Optional[Dic
 
     if not merged.get("train_no") and metadata.get("train_number_string"):
         merged["train_no"] = str(metadata.get("train_number_string"))
-    merged["schedule"] = metadata.get("schedule") or merged.get("schedule") or None
+    schedule = metadata.get("schedule") or merged.get("schedule") or None
+    # print(live_status)
+    for station in schedule:
+        station["arrivalTime"] = getNonIntermediateStaionFromSchedule(live_status.get("schedule"), station.get("stationCode")).get("arrival_time") if getStationFromSchedule(metadata.get("schedule"), station.get("stationCode")) else None
+        station["departureTime"] = getNonIntermediateStaionFromSchedule(live_status.get("schedule"), station.get("stationCode")).get("departure_time") if getStationFromSchedule(metadata.get("schedule"), station.get("stationCode")) else None
+        station["originDst"] = station["whereismyTrainDistance"] if station.get("whereismyTrainDistance") is not None else getNonIntermediateStaionFromSchedule(live_status.get("schedule"), station.get("stationCode")).get("distance_from_origin") if getStationFromSchedule(metadata.get("schedule"), station.get("stationCode")) else None
+        station["distanceFromOrigin"] = str(station["whereismyTrainDistance"]) + " km" if station.get("whereismyTrainDistance") is not None else getNonIntermediateStaionFromSchedule(live_status.get("schedule"), station.get("stationCode")).get("distance_from_origin") if getStationFromSchedule(metadata.get("schedule"), station.get("stationCode")) else None
+        merged["schedule"] = schedule
     return merged
 
 
