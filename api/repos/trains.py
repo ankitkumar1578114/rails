@@ -1,4 +1,4 @@
-from db import get_db_connection
+from repos.db import get_db_connection
 from typing import Any, Dict, List
 from utils.json import parse_json_string_list
 

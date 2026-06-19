@@ -3,7 +3,7 @@ import json
 import os
 import sys
 from typing import Any, Dict, List, Optional
-from db import get_db_connection
+from repos.db import get_db_connection
 
 from services.trains import fetchTrainsByNameOrNumber, fetch_trains_between
 from services.stations import getStationsByNameOrCode

@@ -1,7 +1,7 @@
 from utils.helper import normalize_station_code
 from repos.trains import fetch_trains_by_query, load_station_trains
 from typing import Any, Dict, List
-from db import get_db_connection
+from repos.db import get_db_connection
 from utils.json import parse_json_list
 
 
