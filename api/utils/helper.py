@@ -47,3 +47,9 @@ def getStationFromSchedule(schedule: Any, station_code: str) -> Optional[Dict[st
                 if inter_code and inter_code.strip().upper() == station_code.strip().upper():
                     return inter
     return None
+
+def normalize_station_code(code: Any) -> Optional[str]:
+    if code is None:
+        return None
+    return str(code).strip().upper()
+
