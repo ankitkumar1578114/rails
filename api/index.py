@@ -19,7 +19,7 @@ import uvicorn
 
 from fetch_live_status import fetch_train_status
 from api.sources.redbus import RedbusTrainStatusProvider
-from api.sources.whereismytrain import fetch_whereismytrain_status
+from api.sources.whereismytrain import  fetch_whereismytrain_distance
 from api.utils.helper import getNonIntermediateStaionFromSchedule, getStationFromSchedule
 
 app = FastAPI(
@@ -174,13 +174,13 @@ def get_v2_status(
         provider = RedbusTrainStatusProvider()
         live_status = provider.fetch(train_no_value, date_value)
         metadata = fetch_train_metadata(train_no_value)
-        status_data = fetch_whereismytrain_status(train_no_value, date_value)
+        whereIsMyTrainDistance = fetch_whereismytrain_distance(train_no_value, date_value)
         result = merge_live_with_metadata(live_status, metadata)
 
         providerCurrStationCode = live_status.get("station_status").get("currently_at_code")
         providerCurrStation = getStationFromSchedule(result.get("schedule"), providerCurrStationCode) if providerCurrStationCode else None
         providerCurrStationDistance = providerCurrStation.get("originDst") if providerCurrStation else None
-        result["live_train_status"] = compute_current_location(result.get("schedule"), providerCurrStationDistance if providerCurrStationDistance else 0 , status_data.get("distance") if status_data.get("distance") else 0 )
+        result["live_train_status"] = compute_current_location(result.get("schedule"), providerCurrStationDistance if providerCurrStationDistance else 0 , whereIsMyTrainDistance)
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch v2 status: {exc}")
