@@ -3,10 +3,10 @@ import json
 import os
 import sys
 from typing import Any, Dict, List, Optional
-from repos.db import get_db_connection
+from api.repos.db import get_db_connection
 
-from services.trains import fetchTrainsByNameOrNumber, fetch_trains_between
-from services.stations import getStationsByNameOrCode
+from api.services.trains import fetchTrainsByNameOrNumber, fetch_trains_between
+from api.services.stations import getStationsByNameOrCode
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
@@ -20,7 +20,7 @@ import uvicorn
 from fetch_live_status import fetch_train_status
 from api.sources.redbus import RedbusTrainStatusProvider
 from api.sources.whereismytrain import fetch_whereismytrain_status
-from utils.helper import getNonIntermediateStaionFromSchedule, getStationFromSchedule
+from api.utils.helper import getNonIntermediateStaionFromSchedule, getStationFromSchedule
 
 app = FastAPI(
     title="Live Train Status API",

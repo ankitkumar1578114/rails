@@ -1,7 +1,7 @@
 
 from typing import Any, Dict, List
 
-from repos.stations import fetch_stations_by_name, fetch_stations_by_code
+from api.repos.stations import fetch_stations_by_name, fetch_stations_by_code
 
 def getStationsByNameOrCode(search_term: str) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []

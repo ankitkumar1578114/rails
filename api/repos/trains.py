@@ -1,6 +1,6 @@
-from repos.db import get_db_connection
+from api.repos.db import get_db_connection
 from typing import Any, Dict, List
-from utils.json import parse_json_string_list
+from api.utils.json import parse_json_string_list
 
 
 def fetch_trains_by_query(query_value: str) -> List[Dict[str, Any]]:

@@ -1,8 +1,8 @@
-from utils.helper import normalize_station_code
-from repos.trains import fetch_trains_by_query, load_station_trains
+from api.utils.helper import normalize_station_code
+from api.repos.trains import fetch_trains_by_query, load_station_trains
 from typing import Any, Dict, List
-from repos.db import get_db_connection
-from utils.json import parse_json_list
+from api.repos.db import get_db_connection
+from api.utils.json import parse_json_list
 
 
 def fetchTrainsByNameOrNumber(query_value: str) -> List[Dict[str, Any]]:
