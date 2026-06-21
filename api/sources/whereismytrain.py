@@ -27,10 +27,8 @@ def fetch_whereismytrain_status(train_no: str, date_value: Optional[str]) -> Dic
 
 def fetch_whereismytrain2_status(train_no: str, date_value: Optional[str]) -> Dict[str, Any]:
     try:
-        api_url = "https://2fe4m4jegh2fuhgkk3u7v4sqv40qpago.lambda-url.ap-south-1.on.aws/trains/"+train_no + "/live?haltsOnly=true&date=2026-06-20"
-        params = {
-            "date": convert_date(date_value),
-        }
+        api_url = "https://2fe4m4jegh2fuhgkk3u7v4sqv40qpago.lambda-url.ap-south-1.on.aws/trains/"+train_no + "/live?haltsOnly=true&date="+convert_date(date_value)
+        params={}
         response = requests.get(api_url, params=params, timeout=30)
         response.raise_for_status()
         return response.json()
@@ -43,7 +41,6 @@ def fetch_whereismytrain_distance(train_no: str, date_value: Optional[str]) -> O
     status2 = fetch_whereismytrain2_status(train_no, date_value)
     distance = status.get("distance") if status.get("distance") is not None else 0
     distance2 = status2.get("data").get("currentLocation").get("distanceFromOriginKm") if status2.get("data") and status2.get("data").get("currentLocation") else 0
-    print(distance,distance2,date_value)
     if isinstance(distance, int):
         return distance
     return max(distance,distance2)

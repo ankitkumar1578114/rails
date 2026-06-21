@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+
 from typing import Any, Dict, List, Optional
 from api.repos.db import get_db_connection
 
@@ -35,27 +36,6 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
-
-
-@app.get("/status")
-def get_live_status(
-    request: Request,
-    train: Optional[str] = Query(None, description="Primary train number query parameter"),
-    train_no: Optional[str] = Query(None, alias="train_no", description="Alternative train number query parameter"),
-    date: Optional[str] = Query(None, alias="date", description="Optional date parameter in format 11-Jun-2026"),
-):
-    train_no_value = (train or train_no or "").strip()
-    if not train_no_value:
-        raise HTTPException(status_code=400, detail="Missing required query parameter: train or train_no")
-
-    date_value = request.query_params.get("Date") or date
-    if date_value:
-        date_value = date_value.strip()
-
-    try:
-        return fetch_train_status(train_no_value, date_value)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch live status: {exc}")
 
 
 def compute_current_location(schedule: Any,provider_current_distance: Any, current_distance: Any,) -> Dict[str, Any]:
