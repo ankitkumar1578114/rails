@@ -2,6 +2,7 @@ import requests
 from typing import Any, Dict, List, Optional
 
 from .base import TrainStatusProvider
+from api.utils.helper import format_train_running_status, getNonIntermediateStaionFromSchedule, getStationFromSchedule
 
 
 class RedbusTrainStatusProvider(TrainStatusProvider):
@@ -123,3 +124,17 @@ class RedbusTrainStatusProvider(TrainStatusProvider):
             status_source_url=api_url,
             station_status=station_status,
         )
+    def format_final_response(self, result:Any, provider_response: Any, live_train_status:Any, **kwargs: Any) ->Any:
+        schedule = result.get("schedule")
+        for station in schedule:
+            station["arrivalTime"] = getNonIntermediateStaionFromSchedule(provider_response.get("schedule"), station.get("stationCode")).get("arrival_time") if getStationFromSchedule(result.get("schedule"), station.get("stationCode")) else None
+            station["departureTime"] = getNonIntermediateStaionFromSchedule(provider_response.get("schedule"), station.get("stationCode")).get("departure_time") if getStationFromSchedule(result.get("schedule"), station.get("stationCode")) else None
+            station["originDst"] = station["whereismyTrainDistance"] if station.get("whereismyTrainDistance") is not None else getNonIntermediateStaionFromSchedule(result.get("schedule"), station.get("stationCode")).get("distance_from_origin") if getStationFromSchedule(result.get("schedule"), station.get("stationCode")) else None
+            station["distanceFromOrigin"] = str(station["whereismyTrainDistance"]) + " km" if station.get("whereismyTrainDistance") is not None else getNonIntermediateStaionFromSchedule(result.get("schedule"), station.get("stationCode")).get("distance_from_origin") if getStationFromSchedule(result.get("schedule"), station.get("stationCode")) else None
+        result["schedule"] = schedule
+        providerRunningStatus = provider_response.get("station_status").get("running_status").get("status")
+        live_train_status["running_status"] = format_train_running_status(providerRunningStatus)
+        live_train_status["provider_running_status"] = providerRunningStatus 
+        live_train_status["delay"] = provider_response.get("station_status").get("total_late_minutes")
+        result["live_train_status"] = live_train_status
+        return result

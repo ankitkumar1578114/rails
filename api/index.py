@@ -20,8 +20,8 @@ import uvicorn
 
 from fetch_live_status import fetch_train_status
 from api.sources.redbus import RedbusTrainStatusProvider
-from api.sources.whereismytrain import  fetch_whereismytrain_distance
-from api.utils.helper import getNonIntermediateStaionFromSchedule, getStationFromSchedule
+from api.sources.whereismytrain import  fetch_whereismytrain_response, format_final_response
+from api.utils.helper import getNonIntermediateStaionFromSchedule, getStationFromSchedule, compute_current_location
 
 app = FastAPI(
     title="Live Train Status API",
@@ -36,104 +36,6 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
-
-
-def compute_current_location(schedule: Any,provider_current_distance: Any, current_distance: Any,) -> Dict[str, Any]:
-    if isinstance(schedule, str):
-        try:
-            schedule = json.loads(schedule)
-        except json.JSONDecodeError:
-            schedule = []
-    main_source = "custom"
-    if(provider_current_distance > current_distance ):
-        current_distance = provider_current_distance
-        main_source = "provider"
-
-    if not isinstance(schedule, list):
-        schedule = []
-
-    def parse_distance(value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            return float(value)
-        if isinstance(value, str):
-            digits = "".join(ch for ch in value if ch.isdigit() or ch == ".")
-            try:
-                return float(digits) if digits else None
-            except ValueError:
-                return None
-        return None
-
-    try:
-        current_distance_value = float(parse_distance(current_distance) or 0)
-    except (TypeError, ValueError):
-        return {
-            "currentStation": None,
-            "upcomingStation": None,
-            "upcomingStationInKms": None,
-        }
-    
-
-    stations = []
-    for item in schedule:
-        if not isinstance(item, dict):
-            continue
-
-        station_distance = item.get("distance_from_origin") or item.get("distance") or item.get("distanceFromOrigin")
-        station_distance_value = parse_distance(station_distance)
-        station_code = item.get("station_code") or item.get("stationCode") or item.get("StationCode")
-
-        if station_distance_value is not None and station_code:
-            stations.append({"code": station_code, "distance": station_distance_value})
-
-        intermediate = item.get("intermediate_stations") or item.get("intermediateStations") or []
-        for inter in intermediate:
-            if isinstance(inter, dict):
-                inter_distance = inter.get("distanceFromOrigin") or inter.get("distance")
-                inter_distance_value = parse_distance(inter_distance)
-                inter_code = inter.get("station_code") or inter.get("stationCode") or inter.get("StationCode")
-                if inter_distance_value is not None and inter_code:
-                    stations.append({"code": inter_code, "distance": inter_distance_value})
-
-
-    current_station = None
-    upcoming_station = None
-    upcoming_kms = None
-    upcoming_station_idx = 0
-
-    for index, station in enumerate(stations):
-        if station["distance"] > current_distance_value:
-            upcoming_station = station["code"]
-            upcoming_station_idx = index
-            upcoming_kms = station["distance"] - current_distance_value
-            if index > 0:
-                current_station = stations[index - 1]["code"]
-            break
-
-    if current_station is None and stations:
-        current_station = stations[len(stations) -1]["code"]
-
-    if(current_distance == 0):
-        return {
-            "currentStation": stations[0]["code"] if stations else None,
-            "upcomingStation": stations[1]["code"] if stations else None,
-            "upcomingStationInKms": stations[1]["distance"] if stations else None,
-        }
-
-    if upcoming_kms is not None:
-        upcoming_kms = int(upcoming_kms)
-        if upcoming_kms < 2:
-            current_station = upcoming_station
-            upcoming_station = stations[upcoming_station_idx + 1]["code"] if upcoming_station_idx + 1 < len(stations) else None   
-            upcoming_kms = int(stations[upcoming_station_idx + 1]["distance"] - current_distance_value) if upcoming_station_idx + 1 < len(stations) else None
-    return {
-        "currentStation": current_station,
-        "upcomingStation": upcoming_station,
-        "upcomingStationInKms": upcoming_kms if upcoming_kms is not None else 0,
-        "main_source": main_source,
-    }
-
 
 @app.get("/v2/status")
 def get_v2_status(
@@ -151,16 +53,20 @@ def get_v2_status(
         date_value = date_value.strip()
 
     try:
+        result = fetch_train_metadata(train_no_value)
+        whereIsMyTrainResponse = fetch_whereismytrain_response(train_no_value, date_value)
         provider = RedbusTrainStatusProvider()
-        live_status = provider.fetch(train_no_value, date_value)
-        metadata = fetch_train_metadata(train_no_value)
-        whereIsMyTrainDistance = fetch_whereismytrain_distance(train_no_value, date_value)
-        result = merge_live_with_metadata(live_status, metadata)
-
-        providerCurrStationCode = live_status.get("station_status").get("currently_at_code")
+        provider_response = provider.fetch(train_no_value, date_value)
+        providerCurrStationCode = provider_response.get("station_status").get("currently_at_code")
         providerCurrStation = getStationFromSchedule(result.get("schedule"), providerCurrStationCode) if providerCurrStationCode else None
         providerCurrStationDistance = providerCurrStation.get("originDst") if providerCurrStation else None
-        result["live_train_status"] = compute_current_location(result.get("schedule"), providerCurrStationDistance if providerCurrStationDistance else 0 , whereIsMyTrainDistance)
+        
+        live_train_status = compute_current_location(result.get("schedule"), providerCurrStationDistance if providerCurrStationDistance else 0 , whereIsMyTrainResponse.get("distance") if whereIsMyTrainResponse.get("distance") else -1)        
+        
+        if live_train_status["main_source"] == "custom":
+            result = format_final_response(result, whereIsMyTrainResponse, live_train_status)
+        else:
+            result = provider.format_final_response(result, provider_response ,live_train_status)
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch v2 status: {exc}")
@@ -199,44 +105,6 @@ def fetch_train_metadata(train_no: str) -> Optional[Dict[str, Any]]:
             row["classes"] = parse_json_value(row.get("classes") or row.get("Classes"))
             row["schedule"] = parse_json_value(row.get("schedule") or row.get("Schedule"))
             return row
-
-
-def merge_live_with_metadata(live_status: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    if metadata is None:
-        return live_status
-
-    merged = live_status.copy()
-    fallback_fields = [
-        "train_name",
-        "train_number_string",
-        "train_type",
-        "source_station",
-        "source_code",
-        "destination",
-        "destination_code",
-        "days_of_run",
-        "classes",
-        "total_duration",
-        "total_distance",
-        "total_number_of_stops",
-    ]
-
-    for field in fallback_fields:
-        if not merged.get(field) and metadata.get(field) is not None:
-            merged[field] = metadata.get(field)
-
-    if not merged.get("train_no") and metadata.get("train_number_string"):
-        merged["train_no"] = str(metadata.get("train_number_string"))
-    schedule = metadata.get("schedule") or merged.get("schedule") or None
-    # print(live_status)
-    for station in schedule:
-        station["arrivalTime"] = getNonIntermediateStaionFromSchedule(live_status.get("schedule"), station.get("stationCode")).get("arrival_time") if getStationFromSchedule(metadata.get("schedule"), station.get("stationCode")) else None
-        station["departureTime"] = getNonIntermediateStaionFromSchedule(live_status.get("schedule"), station.get("stationCode")).get("departure_time") if getStationFromSchedule(metadata.get("schedule"), station.get("stationCode")) else None
-        station["originDst"] = station["whereismyTrainDistance"] if station.get("whereismyTrainDistance") is not None else getNonIntermediateStaionFromSchedule(live_status.get("schedule"), station.get("stationCode")).get("distance_from_origin") if getStationFromSchedule(metadata.get("schedule"), station.get("stationCode")) else None
-        station["distanceFromOrigin"] = str(station["whereismyTrainDistance"]) + " km" if station.get("whereismyTrainDistance") is not None else getNonIntermediateStaionFromSchedule(live_status.get("schedule"), station.get("stationCode")).get("distance_from_origin") if getStationFromSchedule(metadata.get("schedule"), station.get("stationCode")) else None
-        merged["schedule"] = schedule
-    return merged
-
 
 @app.get("/stations")
 def search_stations(

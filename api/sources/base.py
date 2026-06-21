@@ -10,7 +10,7 @@ class TrainStatusProvider(ABC):
     @abstractmethod
     def fetch(self, train_no: str, **kwargs: Any) -> Dict[str, Any]:
         raise NotImplementedError()
-
+    
     def normalize_response(
         self,
         train_no: str,
