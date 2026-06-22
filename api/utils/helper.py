@@ -62,6 +62,8 @@ def format_train_running_status(status: str) -> str:
         return "halted"
     if(status == "Scheduled"):
         return "scheduled"
+    if(status == "TrainSchedule"):
+        return "not-scheduled-today"
 
 def compute_current_location(schedule: Any,provider_current_distance: Any, current_distance: Any,) -> Dict[str, Any]:
     if isinstance(schedule, str):

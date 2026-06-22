@@ -127,12 +127,12 @@ class RedbusTrainStatusProvider(TrainStatusProvider):
     def format_final_response(self, result:Any, provider_response: Any, live_train_status:Any, **kwargs: Any) ->Any:
         schedule = result.get("schedule")
         for station in schedule:
-            station["arrivalTime"] = getNonIntermediateStaionFromSchedule(provider_response.get("schedule"), station.get("stationCode")).get("arrival_time") if getStationFromSchedule(result.get("schedule"), station.get("stationCode")) else None
-            station["departureTime"] = getNonIntermediateStaionFromSchedule(provider_response.get("schedule"), station.get("stationCode")).get("departure_time") if getStationFromSchedule(result.get("schedule"), station.get("stationCode")) else None
-            station["delayArr"] = getNonIntermediateStaionFromSchedule(provider_response.get("schedule"), station.get("stationCode")).get("delay_arr") or 0 if getStationFromSchedule(result.get("schedule"), station.get("stationCode")) else None
-            station["delayDep"] = getNonIntermediateStaionFromSchedule(provider_response.get("schedule"), station.get("stationCode")).get("delay_dep") or 0 if getStationFromSchedule(result.get("schedule"), station.get("stationCode")) else None
-            station["originDst"] = station["whereismyTrainDistance"] if station.get("whereismyTrainDistance") is not None else getNonIntermediateStaionFromSchedule(result.get("schedule"), station.get("stationCode")).get("distance_from_origin") if getStationFromSchedule(result.get("schedule"), station.get("stationCode")) else None
-            station["distanceFromOrigin"] = str(station["whereismyTrainDistance"]) + " km" if station.get("whereismyTrainDistance") is not None else getNonIntermediateStaionFromSchedule(result.get("schedule"), station.get("stationCode")).get("distance_from_origin") if getStationFromSchedule(result.get("schedule"), station.get("stationCode")) else None
+            nonIntermediateStation = getNonIntermediateStaionFromSchedule(provider_response.get("schedule"), station.get("stationCode"))
+            station["arrivalTime"] = nonIntermediateStation.get("arrival_time") if nonIntermediateStation else None
+            station["departureTime"] = nonIntermediateStation.get("departure_time") if nonIntermediateStation else None
+            station["delayArr"] = nonIntermediateStation.get("delay_arr") or 0 if nonIntermediateStation else None
+            station["delayDep"] = nonIntermediateStation.get("delay_dep") or 0 if nonIntermediateStation else None
+            station["originDst"] = station["whereismyTrainDistance"] if station.get("whereismyTrainDistance") is not None else nonIntermediateStation.get("distance_from_origin") if nonIntermediateStation else None
         result["schedule"] = schedule
         providerRunningStatus = provider_response.get("station_status").get("running_status").get("status")
         live_train_status["running_status"] = format_train_running_status(providerRunningStatus)
