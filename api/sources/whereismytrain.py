@@ -76,6 +76,8 @@ def format_final_response(result: Any, whereismytrain_response: Any, live_train_
     whereIsMyTrainRunningStatus = whereismytrain_response.get("running_status")
     if not live_train_status["running_status_overridden"]:
         live_train_status["running_status"] = format_train_running_status(whereIsMyTrainRunningStatus)
+    else:
+        live_train_status["running_status"] = "at-station"
     live_train_status["whereismytrain_running_status"] = whereIsMyTrainRunningStatus   
     currentStation = getStationFromProviderResponse(whereismytrain_response, whereismytrain_response.get("currentStation"))
 
