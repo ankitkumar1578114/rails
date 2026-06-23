@@ -6,7 +6,7 @@ import sys
 from typing import Any, Dict, List, Optional
 from api.repos.db import get_db_connection
 
-from api.services.trains import fetchTrainsByNameOrNumber, fetch_trains_between
+from api.services.trains import fetchTrainsByNameOrNumber, fetch_trains_between, fetch_trains_between_v2
 from api.services.stations import getStationsByNameOrCode
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -147,6 +147,22 @@ def search_trains_between(
 
     try:
         return fetch_trains_between(from_station.strip(), to_station.strip())
+    except mysql.connector.Error as exc:
+        raise HTTPException(status_code=500, detail=f"Database error while fetching trains between stations: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch trains between stations: {exc}")
+
+
+@app.get("/v2/trains/between")
+def search_trains_between_v2(
+    from_station: Optional[str] = Query(None, alias="from", description="Source station code"),
+    to_station: Optional[str] = Query(None, alias="to", description="Destination station code"),
+):
+    if not from_station or not from_station.strip() or not to_station or not to_station.strip():
+        raise HTTPException(status_code=400, detail="Missing required query parameters: from and to")
+
+    try:
+        return fetch_trains_between_v2(from_station.strip(), to_station.strip())
     except mysql.connector.Error as exc:
         raise HTTPException(status_code=500, detail=f"Database error while fetching trains between stations: {exc}")
     except Exception as exc:

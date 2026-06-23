@@ -27,3 +27,20 @@ def load_station_trains(station_code: str) -> List[str]:
                 return []
             return parse_json_string_list(row.get("trains"))
         
+def load_region_trains(region_code: str) -> List[str]:
+    normalized_region = str(region_code).strip().upper()
+    if not normalized_region:
+        return []
+
+    query = """
+        SELECT trains
+        FROM stationsV2
+        WHERE UPPER(TRIM(COALESCE(region, ''))) = %s
+    """
+    trains: List[str] = []
+    with get_db_connection() as conn:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(query, (normalized_region,))
+            for row in cursor.fetchall():
+                trains.extend(parse_json_string_list(row.get("trains")))
+    return trains
