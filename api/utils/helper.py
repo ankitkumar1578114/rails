@@ -54,7 +54,7 @@ def normalize_station_code(code: Any) -> Optional[str]:
     return str(code).strip().upper()
 
 def format_train_running_status(status: str) -> str:
-    if(status =='at-station' or status == 'Arrived at'):
+    if(status =='at-station' or status == 'Arrived at' or status == 'Reached'):
         return "at-station"
     if(status == 'departed' or status == 'Departed'):
         return "departed"
