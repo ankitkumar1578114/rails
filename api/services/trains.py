@@ -1,7 +1,8 @@
-from api.utils.helper import normalize_station_code
-from api.repos.trains import fetch_trains_by_query, load_station_trains
 from typing import Any, Dict, List
+
 from api.repos.db import get_db_connection
+from api.repos.trains import fetch_trains_by_query, load_station_trains_pair
+from api.utils.helper import normalize_station_code
 from api.utils.json import parse_json_list
 
 
@@ -9,15 +10,16 @@ def fetchTrainsByNameOrNumber(query_value: str) -> List[Dict[str, Any]]:
     return fetch_trains_by_query(query_value.strip())
 
 def fetch_trains_between(from_station: str, to_station: str) -> List[Dict[str, Any]]:
-    from_trains = set(load_station_trains(from_station))
-    to_trains = set(load_station_trains(to_station))
-    common_trains = from_trains.intersection(to_trains)
-    if not common_trains:
-        return []
-
-    placeholders = ",".join(["%s"] * len(common_trains))
-    query = f"SELECT * FROM trains WHERE train_number_string IN ({placeholders})"
     with get_db_connection() as conn:
+        from_trains_list, to_trains_list = load_station_trains_pair(
+            from_station, to_station, conn
+        )
+        common_trains = set(from_trains_list).intersection(to_trains_list)
+        if not common_trains:
+            return []
+
+        placeholders = ",".join(["%s"] * len(common_trains))
+        query = f"SELECT * FROM trains WHERE train_no IN ({placeholders})"
         with conn.cursor(dictionary=True) as cursor:
             cursor.execute(query, tuple(common_trains))
             rows = cursor.fetchall()
