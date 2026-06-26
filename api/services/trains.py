@@ -1,9 +1,11 @@
+import json
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from api.repos.db import db_connection
 from api.repos.stations import (
     ensure_regions_stations_trains_loaded,
     fetch_station_regions_batch,
+    get_combined_region_station_weights,
     get_region_stations_trains,
 )
 from api.repos.trains import (
@@ -36,6 +38,8 @@ def fetch_trains_between(
         rows = fetch_trains_by_numbers(sorted(common_trains), connection)
         filtered_rows: List[Dict[str, Any]] = []
         for row in rows:
+            if not train_runs_on_any_day(row):
+                continue
             schedule = parse_json_list(row.get("Schedule") or row.get("schedule"))
             if route_has_station_order(schedule, from_station, to_station):
                 filtered_rows.append(row)
@@ -101,7 +105,11 @@ def fetch_trains_between_with_alternatives(
         for train_no in direct_train_numbers:
             row = train_rows_by_number.get(train_no)
             schedule = parsed_schedules.get(train_no, [])
-            if row and route_has_station_order(schedule, from_code, to_code):
+            if (
+                row
+                and train_runs_on_any_day(row)
+                and route_has_station_order(schedule, from_code, to_code)
+            ):
                 direct_trains.append(row)
 
         direct_train_number_set = {
@@ -141,6 +149,9 @@ def fetch_trains_between_with_alternatives(
         to_region_code_set = {
             normalize_station_code(code) for code in to_region_data
         }
+        station_weights = get_combined_region_station_weights(
+            from_region, to_region, conn
+        )
 
         alternative_trains: List[Dict[str, Any]] = []
         for train_no in candidate_train_numbers:
@@ -149,7 +160,7 @@ def fetch_trains_between_with_alternatives(
 
             row = train_rows_by_number.get(train_no)
             schedule = parsed_schedules.get(train_no, [])
-            if not row:
+            if not row or not train_runs_on_any_day(row):
                 continue
 
             regional_match = find_regional_route_match(
@@ -158,6 +169,7 @@ def fetch_trains_between_with_alternatives(
                 to_region_code_set,
                 from_code,
                 to_code,
+                station_weights,
             )
             if not regional_match:
                 continue
@@ -313,6 +325,8 @@ def route_has_station_order(route: List[Any], from_station: str, to_station: str
 def build_response_train_row(
     train_row: Dict[str, Any],
     stops_between_stations: Optional[int] = None,
+    distance_between_stations: Optional[float] = None,
+    scheduled_travel_time: Optional[str] = None,
 ) -> Dict[str, Any]:
     response = {
         "train_no": train_row.get("train_no"),
@@ -331,6 +345,10 @@ def build_response_train_row(
     }
     if stops_between_stations is not None:
         response["stops_between_stations"] = stops_between_stations
+    if distance_between_stations is not None:
+        response["distance_between_stations"] = distance_between_stations
+    if scheduled_travel_time is not None:
+        response["scheduled_travel_time"] = scheduled_travel_time
     return response
 
 
@@ -340,11 +358,15 @@ def build_direct_train_response(
     from_station: str,
     to_station: str,
 ) -> Dict[str, Any]:
+    from_stop, to_stop = get_route_stops_for_segment(schedule, from_station, to_station)
+    journey_metrics = build_journey_segment_metrics(from_stop, to_stop)
     return build_response_train_row(
         train_row,
         stops_between_stations=count_stops_between_stations(
             schedule, from_station, to_station
         ),
+        distance_between_stations=journey_metrics.get("distance_between_stations"),
+        scheduled_travel_time=journey_metrics.get("scheduled_travel_time"),
     )
 
 
@@ -383,6 +405,176 @@ def get_scheduled_arrival_time(station: Dict[str, Any]) -> Optional[str]:
     return str(value).strip() if value else None
 
 
+def parse_time_to_minutes(time_value: Optional[str]) -> Optional[int]:
+    if not time_value or time_value in ("SOURCE", "DESTINATION"):
+        return None
+
+    parts = str(time_value).strip().split(":")
+    if len(parts) < 2:
+        return None
+
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+    except ValueError:
+        return None
+
+    if hours < 0 or minutes < 0 or minutes >= 60:
+        return None
+
+    return hours * 60 + minutes
+
+
+def get_station_day_count(station: Dict[str, Any]) -> int:
+    day_count = station.get("dayCount") or station.get("day_count") or 1
+    try:
+        return max(1, int(day_count))
+    except (TypeError, ValueError):
+        return 1
+
+
+def parse_days_of_run(value: Any) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def is_active_run_day(value: Any) -> bool:
+    if value is True or value == 1:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "y", "yes"}
+    return False
+
+
+def train_runs_on_any_day(train_row: Dict[str, Any]) -> bool:
+    days_of_run = parse_days_of_run(
+        train_row.get("days_of_run") or train_row.get("DaysOfRun")
+    )
+    if not days_of_run:
+        return False
+    return any(is_active_run_day(day_value) for day_value in days_of_run.values())
+
+
+def parse_distance_value(distance: Any) -> Optional[float]:
+    if distance is None:
+        return None
+    if isinstance(distance, (int, float)):
+        return float(distance)
+
+    digits = "".join(ch for ch in str(distance) if ch.isdigit() or ch == ".")
+    if not digits:
+        return None
+
+    try:
+        return float(digits)
+    except ValueError:
+        return None
+
+
+def get_station_distance(station: Dict[str, Any]) -> Optional[float]:
+    for key in (
+        "distance",
+        "distance_from_origin",
+        "origin_dst",
+        "originDst",
+        "distanceFromOrigin",
+    ):
+        parsed = parse_distance_value(station.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def format_travel_duration(total_minutes: int) -> str:
+    hours, minutes = divmod(total_minutes, 60)
+    if hours and minutes:
+        return f"{hours}h {minutes}m"
+    if hours:
+        return f"{hours}h"
+    return f"{minutes}m"
+
+
+def calculate_distance_between_stations(
+    from_stop: Dict[str, Any], to_stop: Dict[str, Any]
+) -> Optional[float]:
+    from_distance = get_station_distance(from_stop)
+    to_distance = get_station_distance(to_stop)
+    if from_distance is None or to_distance is None:
+        return None
+
+    distance = to_distance - from_distance
+    if distance < 0:
+        return None
+    return round(distance, 1)
+
+
+def calculate_scheduled_travel_time(
+    from_stop: Dict[str, Any], to_stop: Dict[str, Any]
+) -> Optional[str]:
+    departure_minutes = parse_time_to_minutes(get_scheduled_departure_time(from_stop))
+    arrival_minutes = parse_time_to_minutes(get_scheduled_arrival_time(to_stop))
+    if departure_minutes is None or arrival_minutes is None:
+        return None
+
+    from_day = get_station_day_count(from_stop)
+    to_day = get_station_day_count(to_stop)
+    day_diff = max(0, to_day - from_day)
+    total_minutes = day_diff * 24 * 60 + arrival_minutes - departure_minutes
+
+    if day_diff == 0 and arrival_minutes < departure_minutes:
+        total_minutes += 24 * 60
+
+    if total_minutes < 0:
+        return None
+
+    return format_travel_duration(total_minutes)
+
+
+def build_journey_segment_metrics(
+    from_stop: Optional[Dict[str, Any]],
+    to_stop: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not from_stop or not to_stop:
+        return {}
+
+    metrics: Dict[str, Any] = {}
+    distance = calculate_distance_between_stations(from_stop, to_stop)
+    travel_time = calculate_scheduled_travel_time(from_stop, to_stop)
+
+    if distance is not None:
+        metrics["distance_between_stations"] = distance
+    if travel_time is not None:
+        metrics["scheduled_travel_time"] = travel_time
+    return metrics
+
+
+def get_route_stops_for_segment(
+    route: List[Any], from_station: str, to_station: str
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    source_index, dest_index = find_station_order_indices(
+        route, from_station, to_station
+    )
+    if source_index is None or dest_index is None:
+        return None, None
+
+    from_stop = route[source_index]
+    to_stop = route[dest_index]
+    if not isinstance(from_stop, dict) or not isinstance(to_stop, dict):
+        return None, None
+
+    return from_stop, to_stop
+
+
 def build_alternative_to_station_details(
     station: Dict[str, Any], region: Optional[str]
 ) -> Dict[str, Any]:
@@ -392,9 +584,7 @@ def build_alternative_to_station_details(
         "region": region,
         "scheduled_arrival_time": get_scheduled_arrival_time(station),
         "platform": station.get("platform"),
-        "distance": station.get("distance")
-        if station.get("distance") is not None
-        else station.get("distance_from_origin"),
+        "distance": get_station_distance(station),
         "day_count": station.get("dayCount") or station.get("day_count"),
         "scheduled_departure_time": get_scheduled_departure_time(station),
     }
@@ -409,9 +599,7 @@ def build_alternative_from_station_details(
         "region": region,
         "scheduled_departure_time": get_scheduled_departure_time(station),
         "platform": station.get("platform"),
-        "distance": station.get("distance")
-        if station.get("distance") is not None
-        else station.get("distance_from_origin"),
+        "distance": get_station_distance(station),
         "day_count": station.get("dayCount") or station.get("day_count"),
     }
 
@@ -426,6 +614,7 @@ def enrich_alternative_train(
 ) -> Dict[str, Any]:
     from_stop_code = extract_station_code_from_route_item(from_stop)
     to_stop_code = extract_station_code_from_route_item(to_stop)
+    journey_metrics = build_journey_segment_metrics(from_stop, to_stop)
     enriched = build_response_train_row(
         train_row,
         stops_between_stations=count_stops_between_stations(
@@ -433,6 +622,8 @@ def enrich_alternative_train(
         )
         if from_stop_code and to_stop_code
         else None,
+        distance_between_stations=journey_metrics.get("distance_between_stations"),
+        scheduled_travel_time=journey_metrics.get("scheduled_travel_time"),
     )
     enriched["alternative_from_station"] = build_alternative_from_station_details(
         from_stop, from_region
@@ -443,19 +634,37 @@ def enrich_alternative_train(
     return enriched
 
 
-def find_last_region_station_after(
+def get_station_weight(
+    station_code: Optional[str], station_weights: Dict[str, int]
+) -> int:
+    if not station_code:
+        return 0
+    return station_weights.get(station_code, 0)
+
+
+def find_best_weight_region_station_in_range(
     route: List[Any],
     start_idx: int,
+    end_idx: int,
     region_codes: Set[str],
+    station_weights: Dict[str, int],
 ) -> Optional[Dict[str, Any]]:
-    last_match: Optional[Dict[str, Any]] = None
-    for idx in range(start_idx + 1, len(route)):
+    best_station: Optional[Dict[str, Any]] = None
+    best_weight = -1
+
+    for idx in range(start_idx, end_idx):
         station = route[idx]
         if not isinstance(station, dict):
             continue
-        if extract_station_code_from_route_item(station) in region_codes:
-            last_match = station
-    return last_match
+        code = extract_station_code_from_route_item(station)
+        if code not in region_codes:
+            continue
+        weight = get_station_weight(code, station_weights)
+        if weight > best_weight:
+            best_weight = weight
+            best_station = station
+
+    return best_station
 
 
 def find_regional_route_match(
@@ -464,10 +673,12 @@ def find_regional_route_match(
     to_region_codes: Set[str],
     preferred_from_station: Optional[str] = None,
     preferred_to_station: Optional[str] = None,
+    station_weights: Optional[Dict[str, int]] = None,
 ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
     if not route or not from_region_codes or not to_region_codes:
         return None
 
+    weights = station_weights or {}
     preferred_from = normalize_station_code(preferred_from_station)
     preferred_to = normalize_station_code(preferred_to_station)
 
@@ -502,43 +713,76 @@ def find_regional_route_match(
                         continue
                     if extract_station_code_from_route_item(to_station) == preferred_to:
                         return station, to_station
-            to_station = find_last_region_station_after(
-                route, from_idx, to_region_codes
+            to_station = find_best_weight_region_station_in_range(
+                route,
+                from_idx + 1,
+                len(route),
+                to_region_codes,
+                weights,
             )
             if to_station:
                 return station, to_station
 
     if preferred_to:
-        for from_idx, station in enumerate(route):
+        for to_idx, station in enumerate(route):
             if not isinstance(station, dict):
                 continue
-            if extract_station_code_from_route_item(station) not in from_region_codes:
+            if extract_station_code_from_route_item(station) != preferred_to:
                 continue
-            for to_idx in range(from_idx + 1, len(route)):
-                to_station = route[to_idx]
-                if not isinstance(to_station, dict):
-                    continue
-                if extract_station_code_from_route_item(to_station) == preferred_to:
-                    return station, to_station
+            from_station = find_best_weight_region_station_in_range(
+                route,
+                0,
+                to_idx,
+                from_region_codes,
+                weights,
+            )
+            if from_station:
+                return from_station, station
+
+    best_match: Optional[Tuple[Dict[str, Any], Dict[str, Any]]] = None
+    best_score = (-1, -1)
 
     for from_idx, station in enumerate(route):
         if not isinstance(station, dict):
             continue
-        if extract_station_code_from_route_item(station) not in from_region_codes:
+        from_code = extract_station_code_from_route_item(station)
+        if from_code not in from_region_codes:
             continue
-        to_station = find_last_region_station_after(route, from_idx, to_region_codes)
-        if to_station:
-            return station, to_station
 
-    return None
+        to_station = find_best_weight_region_station_in_range(
+            route,
+            from_idx + 1,
+            len(route),
+            to_region_codes,
+            weights,
+        )
+        if not to_station:
+            continue
+
+        to_code = extract_station_code_from_route_item(to_station)
+        score = (
+            get_station_weight(to_code, weights),
+            get_station_weight(from_code, weights),
+        )
+        if score > best_score:
+            best_score = score
+            best_match = (station, to_station)
+
+    return best_match
 
 
 def route_has_region_order(
     route: List[Any],
     from_region_codes: Set[str],
     to_region_codes: Set[str],
+    station_weights: Optional[Dict[str, int]] = None,
 ) -> bool:
     return (
-        find_regional_route_match(route, from_region_codes, to_region_codes)
+        find_regional_route_match(
+            route,
+            from_region_codes,
+            to_region_codes,
+            station_weights=station_weights,
+        )
         is not None
     )

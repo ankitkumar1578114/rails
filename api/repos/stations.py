@@ -7,6 +7,7 @@ from api.utils.json import parse_json_string_list
 
 STATIONS_V2_TABLE = "stationsV2"
 _region_stations_trains_cache: Dict[str, Dict[str, Tuple[str, ...]]] = {}
+_region_station_weights_cache: Dict[str, Dict[str, int]] = {}
 _station_region_cache: Dict[str, str] = {}
 
 
@@ -124,8 +125,9 @@ def fetch_station_regions_batch(
 
 def _parse_region_stations_trains_rows(
     rows: List[Dict[str, Any]],
-) -> Dict[str, Dict[str, Tuple[str, ...]]]:
+) -> Tuple[Dict[str, Dict[str, Tuple[str, ...]]], Dict[str, Dict[str, int]]]:
     regions_data: Dict[str, Dict[str, Tuple[str, ...]]] = {}
+    weights_data: Dict[str, Dict[str, int]] = {}
     for row in rows:
         region = row.get("region")
         code = row.get("station_code")
@@ -134,7 +136,11 @@ def _parse_region_stations_trains_rows(
         region_key = str(region).strip()
         trains = tuple(parse_json_string_list(row.get("trains")))
         regions_data.setdefault(region_key, {})[code] = trains
-    return regions_data
+        weight_value = row.get("weight")
+        weights_data.setdefault(region_key, {})[code] = (
+            int(weight_value) if weight_value is not None else 0
+        )
+    return regions_data, weights_data
 
 
 def ensure_regions_stations_trains_loaded(
@@ -147,7 +153,7 @@ def ensure_regions_stations_trains_loaded(
 
     placeholders = ",".join(["%s"] * len(missing_regions))
     query = f"""
-        SELECT region, station_code, trains
+        SELECT region, station_code, trains, weight
         FROM {STATIONS_V2_TABLE}
         WHERE region IN ({placeholders})
           AND JSON_LENGTH(trains) > 0
@@ -156,9 +162,39 @@ def ensure_regions_stations_trains_loaded(
         cursor.execute(query, tuple(missing_regions))
         rows = cursor.fetchall()
 
-    loaded_regions = _parse_region_stations_trains_rows(rows)
+    loaded_regions, loaded_weights = _parse_region_stations_trains_rows(rows)
     for region in missing_regions:
         _region_stations_trains_cache[region] = loaded_regions.get(region, {})
+        _region_station_weights_cache[region] = loaded_weights.get(region, {})
+
+
+def get_region_station_weights(
+    region: str,
+    conn: Optional[mysql.connector.MySQLConnection] = None,
+) -> Dict[str, int]:
+    if region in _region_station_weights_cache:
+        return _region_station_weights_cache[region]
+
+    if conn is not None:
+        ensure_regions_stations_trains_loaded([region], conn)
+        return _region_station_weights_cache.get(region, {})
+
+    with db_connection() as owned_conn:
+        ensure_regions_stations_trains_loaded([region], owned_conn)
+        return _region_station_weights_cache.get(region, {})
+
+
+def get_combined_region_station_weights(
+    from_region: Optional[str],
+    to_region: Optional[str],
+    conn: Optional[mysql.connector.MySQLConnection] = None,
+) -> Dict[str, int]:
+    weights: Dict[str, int] = {}
+    if from_region:
+        weights.update(get_region_station_weights(from_region, conn))
+    if to_region:
+        weights.update(get_region_station_weights(to_region, conn))
+    return weights
 
 
 def get_region_stations_trains(
