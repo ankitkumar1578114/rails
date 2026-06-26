@@ -24,6 +24,10 @@
       "dest": "api/index.py"
     },
     {
+      "src": "/trains/between/v2",
+      "dest": "api/index.py"
+    },
+    {
       "src": "/trains",
       "dest": "api/index.py"
     },

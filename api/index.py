@@ -4,9 +4,13 @@ import os
 import sys
 
 from typing import Any, Dict, List, Optional
-from api.repos.db import get_db_connection
+from api.repos.db import db_connection
 
-from api.services.trains import fetchTrainsByNameOrNumber, fetch_trains_between
+from api.services.trains import (
+    fetchTrainsByNameOrNumber,
+    fetch_trains_between,
+    fetch_trains_between_with_alternatives,
+)
 from api.services.stations import getStationsByNameOrCode
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -94,7 +98,7 @@ def fetch_train_metadata(train_no: str) -> Optional[Dict[str, Any]]:
         WHERE train_number_string = %s OR train_no = %s
         LIMIT 1
     """
-    with get_db_connection() as conn:
+    with db_connection() as conn:
         with conn.cursor(dictionary=True) as cursor:
             cursor.execute(query, (train_no, train_no))
             row = cursor.fetchone()
@@ -151,6 +155,30 @@ def search_trains_between(
         raise HTTPException(status_code=500, detail=f"Database error while fetching trains between stations: {exc}")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch trains between stations: {exc}")
+
+
+@app.get("/trains/between/v2")
+def search_trains_between_with_alternatives(
+    from_station: Optional[str] = Query(None, alias="from", description="Source station code or name"),
+    to_station: Optional[str] = Query(None, alias="to", description="Destination station code or name"),
+):
+    if not from_station or not from_station.strip() or not to_station or not to_station.strip():
+        raise HTTPException(status_code=400, detail="Missing required query parameters: from and to")
+
+    try:
+        return fetch_trains_between_with_alternatives(
+            from_station.strip(), to_station.strip()
+        )
+    except mysql.connector.Error as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database error while fetching trains between stations: {exc}",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch trains between stations: {exc}",
+        )
 
 
 def run_server(host: str, port: int):

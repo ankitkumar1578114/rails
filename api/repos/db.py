@@ -1,4 +1,5 @@
-from typing import Optional
+from contextlib import contextmanager
+from typing import Generator, Optional
 
 import mysql.connector
 from mysql.connector import pooling
@@ -6,10 +7,10 @@ from mysql.connector import pooling
 _pool: Optional[pooling.MySQLConnectionPool] = None
 
 DB_CONFIG = {
-  # "host": "127.0.0.1",
-  # "user": "root",
-  # "password": "",
-  # "database": "mydb",
+#   "host": "127.0.0.1",
+#   "user": "root",
+#   "password": "",
+#   "database": "mydb",
   "host": "bwr2tjeeysysm7um7pfo-mysql.services.clever-cloud.com",
   "user": "ucg3v1n4o6kbgzk2",
   "password": "8CJNC9GDRkkpe5kPvzJw",
@@ -22,12 +23,21 @@ def _get_pool() -> pooling.MySQLConnectionPool:
     if _pool is None:
         _pool = pooling.MySQLConnectionPool(
             pool_name="rails_api_pool",
-            pool_size=3,
+            pool_size=1,
             pool_reset_session=True,
             **DB_CONFIG,
         )
     return _pool
 
 
-def get_db_connection():
+def get_db_connection() -> mysql.connector.MySQLConnection:
     return _get_pool().get_connection()
+
+
+@contextmanager
+def db_connection() -> Generator[mysql.connector.MySQLConnection, None, None]:
+    conn = get_db_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
