@@ -134,6 +134,8 @@ def fetch_trains_between_with_alternatives(
                             ),
                             from_code,
                             to_code,
+                            from_region,
+                            to_region,
                         )
                         for row in direct_trains
                     ],
@@ -183,6 +185,8 @@ def fetch_trains_between_with_alternatives(
                     from_region,
                     to_region,
                     schedule,
+                    from_code,
+                    to_code,
                 )
             )
 
@@ -197,6 +201,8 @@ def fetch_trains_between_with_alternatives(
                         ),
                         from_code,
                         to_code,
+                        from_region,
+                        to_region,
                     )
                     for row in direct_trains
                 ],
@@ -357,10 +363,12 @@ def build_direct_train_response(
     schedule: List[Any],
     from_station: str,
     to_station: str,
+    from_region: Optional[str] = None,
+    to_region: Optional[str] = None,
 ) -> Dict[str, Any]:
     from_stop, to_stop = get_route_stops_for_segment(schedule, from_station, to_station)
     journey_metrics = build_journey_segment_metrics(from_stop, to_stop)
-    return build_response_train_row(
+    response = build_response_train_row(
         train_row,
         stops_between_stations=count_stops_between_stations(
             schedule, from_station, to_station
@@ -368,6 +376,15 @@ def build_direct_train_response(
         distance_between_stations=journey_metrics.get("distance_between_stations"),
         scheduled_travel_time=journey_metrics.get("scheduled_travel_time"),
     )
+    if from_stop:
+        response["from_station"] = build_alternative_from_station_details(
+            from_stop, from_region
+        )
+    if to_stop:
+        response["to_station"] = build_alternative_to_station_details(
+            to_stop, to_region
+        )
+    return response
 
 
 def extract_station_name(station: Any) -> Optional[str]:
@@ -611,9 +628,13 @@ def enrich_alternative_train(
     from_region: Optional[str],
     to_region: Optional[str],
     schedule: List[Any],
+    searched_from_station: str,
+    searched_to_station: str,
 ) -> Dict[str, Any]:
     from_stop_code = extract_station_code_from_route_item(from_stop)
     to_stop_code = extract_station_code_from_route_item(to_stop)
+    searched_from_code = normalize_station_code(searched_from_station)
+    searched_to_code = normalize_station_code(searched_to_station)
     journey_metrics = build_journey_segment_metrics(from_stop, to_stop)
     enriched = build_response_train_row(
         train_row,
@@ -625,12 +646,22 @@ def enrich_alternative_train(
         distance_between_stations=journey_metrics.get("distance_between_stations"),
         scheduled_travel_time=journey_metrics.get("scheduled_travel_time"),
     )
-    enriched["alternative_from_station"] = build_alternative_from_station_details(
+
+    from_station_details = build_alternative_from_station_details(
         from_stop, from_region
     )
-    enriched["alternative_to_station"] = build_alternative_to_station_details(
-        to_stop, to_region
-    )
+    to_station_details = build_alternative_to_station_details(to_stop, to_region)
+
+    if from_stop_code == searched_from_code:
+        enriched["from_station"] = from_station_details
+    else:
+        enriched["alternative_from_station"] = from_station_details
+
+    if to_stop_code == searched_to_code:
+        enriched["to_station"] = to_station_details
+    else:
+        enriched["alternative_to_station"] = to_station_details
+
     return enriched
 
 
