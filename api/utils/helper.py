@@ -99,6 +99,8 @@ def compute_current_location(schedule: Any,provider_current_distance: Any, curre
             "currentStation": None,
             "upcomingStation": None,
             "upcomingStationInKms": None,
+            "main_source": main_source,
+            "running_status_overridden": False,
         }
     
 
@@ -144,9 +146,10 @@ def compute_current_location(schedule: Any,provider_current_distance: Any, curre
     if(current_distance == 0):
         return {
             "currentStation": stations[0]["code"] if stations else None,
-            "upcomingStation": stations[1]["code"] if stations else None,
-            "upcomingStationInKms": stations[1]["distance"] if stations else None,
-            "main_source": main_source
+            "upcomingStation": stations[1]["code"] if len(stations) > 1 else None,
+            "upcomingStationInKms": stations[1]["distance"] if len(stations) > 1 else None,
+            "main_source": main_source,
+            "running_status_overridden": False,
         }
 
     running_status_overridden = False
