@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from fetch_live_status import fetch_train_status
+from api.routes.ntes import router as ntes_router
 from api.sources.redbus import RedbusFetchError, RedbusTrainStatusProvider
 from api.sources.whereismytrain import (
     fetch_whereismytrain_response,
@@ -44,6 +45,8 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+app.include_router(ntes_router)
 
 @app.get("/v2/status")
 def get_v2_status(

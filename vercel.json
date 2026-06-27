@@ -32,6 +32,10 @@
       "dest": "api/index.py"
     },
     {
+      "src": "/ntes/(.*)",
+      "dest": "api/index.py"
+    },
+    {
       "src": "/",
       "dest": "api/index.py"
     }
