@@ -1,8 +1,40 @@
+import os
 import requests
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .base import TrainStatusProvider
 from api.utils.helper import format_train_running_status, getNonIntermediateStaionFromSchedule, getStationFromSchedule
+
+REDBUS_API_URL = "https://www.redbus.in/railways/api/getLtsDetails"
+
+REDBUS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.redbus.in/railways/",
+    "Origin": "https://www.redbus.in",
+}
+
+REDBUS_CONNECT_TIMEOUT = int(os.environ.get("REDBUS_CONNECT_TIMEOUT", "5"))
+REDBUS_READ_TIMEOUT = int(os.environ.get("REDBUS_READ_TIMEOUT", "10"))
+
+
+class RedbusFetchError(RuntimeError):
+    pass
+
+
+def _request_redbus(params: Dict[str, str]) -> requests.Response:
+    timeout: Tuple[int, int] = (REDBUS_CONNECT_TIMEOUT, REDBUS_READ_TIMEOUT)
+    session = requests.Session()
+    session.trust_env = False
+    # session.headers.update(REDBUS_HEADERS)
+
+    try:
+        response = session.get(REDBUS_API_URL, params=params, timeout=timeout)
+        response.raise_for_status()
+        return response
+    except requests.RequestException as exc:
+        raise RedbusFetchError(f"Redbus API request failed: {exc}") from exc
 
 
 class RedbusTrainStatusProvider(TrainStatusProvider):
@@ -92,15 +124,28 @@ class RedbusTrainStatusProvider(TrainStatusProvider):
             "destination_code": None,
         }
 
-    def fetch(self, train_no: str, doj:str,  **kwargs: Any) -> Dict[str, Any]:
-        def convert_date(date_str):
-            day, month, year = date_str.split('-')
+    def fetch(self, train_no: str, doj: str, **kwargs: Any) -> Dict[str, Any]:
+        def convert_date(date_str: str) -> str:
+            day, month, year = date_str.split("-")
             return f"{year}{month}{day}"
 
-        api_url = "https://www.redbus.in/railways/api/getLtsDetails"
-        response = requests.get(api_url, params={"trainNo": train_no, "doj":convert_date(doj)}, timeout=30)
-        response.raise_for_status()
-        raw = response.json()
+        param_attempts = [
+            {"trainNo": train_no, "doj": convert_date(doj)},
+            {"trainNo": train_no},
+        ]
+
+        last_error: Optional[RedbusFetchError] = None
+        raw: Optional[Dict[str, Any]] = None
+        for params in param_attempts:
+            try:
+                response = _request_redbus(params)
+                raw = response.json()
+                break
+            except RedbusFetchError as exc:
+                last_error = exc
+
+        if raw is None:
+            raise last_error or RedbusFetchError("Redbus API returned no data.")
 
         route_endpoints = self._extract_route_endpoints(raw)
         schedule = self._build_schedule(raw)
@@ -121,10 +166,11 @@ class RedbusTrainStatusProvider(TrainStatusProvider):
             total_distance=raw.get("totalDistance") or raw.get("TotalDistance") or None,
             total_number_of_stops=raw.get("totalNumberOfStops") or raw.get("TotalNumberOfStops") or None,
             page_title=None,
-            status_source_url=api_url,
+            status_source_url=REDBUS_API_URL,
             station_status=station_status,
         )
-    def format_final_response(self, result:Any, provider_response: Any, live_train_status:Any, **kwargs: Any) ->Any:
+
+    def format_final_response(self, result: Any, provider_response: Any, live_train_status: Any, **kwargs: Any) -> Any:
         schedule = result.get("schedule")
         for station in schedule:
             nonIntermediateStation = getNonIntermediateStaionFromSchedule(provider_response.get("schedule"), station.get("stationCode"))
@@ -136,7 +182,7 @@ class RedbusTrainStatusProvider(TrainStatusProvider):
         result["schedule"] = schedule
         providerRunningStatus = provider_response.get("station_status").get("running_status").get("status")
         live_train_status["running_status"] = format_train_running_status(providerRunningStatus)
-        live_train_status["provider_running_status"] = providerRunningStatus 
+        live_train_status["provider_running_status"] = providerRunningStatus
         live_train_status["delay"] = provider_response.get("station_status").get("total_late_minutes")
         result["live_train_status"] = live_train_status
         return result

@@ -23,8 +23,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from fetch_live_status import fetch_train_status
-from api.sources.redbus import RedbusTrainStatusProvider
-from api.sources.whereismytrain import  fetch_whereismytrain_response, format_final_response
+from api.sources.redbus import RedbusFetchError, RedbusTrainStatusProvider
+from api.sources.whereismytrain import (
+    fetch_whereismytrain_response,
+    format_final_response,
+    has_whereismytrain_data,
+)
 from api.utils.helper import getNonIntermediateStaionFromSchedule, getStationFromSchedule, compute_current_location
 
 app = FastAPI(
@@ -58,20 +62,50 @@ def get_v2_status(
 
     try:
         result = fetch_train_metadata(train_no_value)
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Train not found: {train_no_value}")
+
         whereIsMyTrainResponse = fetch_whereismytrain_response(train_no_value, date_value)
+
+        if has_whereismytrain_data(whereIsMyTrainResponse):
+            wimt_distance = whereIsMyTrainResponse.get("distance")
+            live_train_status = compute_current_location(
+                result.get("schedule"),
+                0,
+                wimt_distance if wimt_distance is not None else -1,
+            )
+            response = format_final_response(result, whereIsMyTrainResponse, live_train_status)
+            response["live_status_source"] = "whereismytrain"
+            return response
+
+        if not date_value:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing required date parameter for Redbus fallback when WhereIsMyTrain has no data",
+            )
+
         provider = RedbusTrainStatusProvider()
         provider_response = provider.fetch(train_no_value, date_value)
         providerCurrStationCode = provider_response.get("station_status").get("currently_at_code")
-        providerCurrStation = getStationFromSchedule(result.get("schedule"), providerCurrStationCode) if providerCurrStationCode else None
+        providerCurrStation = (
+            getStationFromSchedule(result.get("schedule"), providerCurrStationCode)
+            if providerCurrStationCode
+            else None
+        )
         providerCurrStationDistance = providerCurrStation.get("originDst") if providerCurrStation else None
-        
-        live_train_status = compute_current_location(result.get("schedule"), providerCurrStationDistance if providerCurrStationDistance else 0 , whereIsMyTrainResponse.get("distance") if whereIsMyTrainResponse.get("distance") else -1)        
-        
-        if live_train_status["main_source"] == "custom":
-            result = format_final_response(result, whereIsMyTrainResponse, live_train_status)
-        else:
-            result = provider.format_final_response(result, provider_response ,live_train_status)
-        return result
+
+        live_train_status = compute_current_location(
+            result.get("schedule"),
+            providerCurrStationDistance if providerCurrStationDistance else 0,
+            -1,
+        )
+        response = provider.format_final_response(result, provider_response, live_train_status)
+        response["live_status_source"] = "redbus"
+        return response
+    except RedbusFetchError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch v2 status: {exc}")
     
