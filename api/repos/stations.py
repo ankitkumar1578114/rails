@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import mysql.connector
 
 from api.repos.db import db_connection
+from api.utils.geo import parse_coordinate
 from api.utils.json import parse_json_string_list
 
 STATIONS_V2_TABLE = "stationsV2"
@@ -195,6 +196,35 @@ def get_combined_region_station_weights(
     if to_region:
         weights.update(get_region_station_weights(to_region, conn))
     return weights
+
+
+def fetch_station_coordinates_batch(
+    station_codes: List[str],
+    conn: mysql.connector.MySQLConnection,
+) -> Dict[str, Tuple[float, float]]:
+    if not station_codes:
+        return {}
+
+    unique_codes = list(dict.fromkeys(code for code in station_codes if code))
+    if not unique_codes:
+        return {}
+
+    placeholders = ",".join(["%s"] * len(unique_codes))
+    query = f"""
+        SELECT station_code, lat, lon
+        FROM {STATIONS_V2_TABLE}
+        WHERE station_code IN ({placeholders})
+    """
+    coordinates_by_station: Dict[str, Tuple[float, float]] = {}
+    with conn.cursor(dictionary=True) as cursor:
+        cursor.execute(query, tuple(unique_codes))
+        for row in cursor.fetchall():
+            code = row.get("station_code")
+            lat = parse_coordinate(row.get("lat"))
+            lon = parse_coordinate(row.get("lon"))
+            if code and lat is not None and lon is not None:
+                coordinates_by_station[str(code).strip()] = (lat, lon)
+    return coordinates_by_station
 
 
 def get_region_stations_trains(

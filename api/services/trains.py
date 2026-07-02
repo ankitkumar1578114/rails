@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from api.repos.db import db_connection
 from api.repos.stations import (
     ensure_regions_stations_trains_loaded,
+    fetch_station_coordinates_batch,
     fetch_station_regions_batch,
     get_combined_region_station_weights,
     get_region_stations_trains,
@@ -14,6 +15,7 @@ from api.repos.trains import (
     load_station_trains_pair,
     fetch_trains_by_query,
 )
+from api.utils.geo import geographic_distance_km
 from api.utils.helper import normalize_station_code
 from api.utils.json import parse_json_list
 
@@ -118,13 +120,17 @@ def fetch_trains_between_with_alternatives(
             if row.get("train_no") or row.get("train_number_string")
         }
 
+        station_coordinates: Dict[str, Tuple[float, float]] = (
+            fetch_station_coordinates_batch([from_code, to_code], conn)
+        )
+
         if (
             not from_region
             or not to_region
             or from_region == to_region
         ):
             return {
-                "direct_trains": sort_trains_by_searched_origin(
+                "direct_trains": sort_direct_trains_by_scheduled_departure_time(
                     [
                         build_direct_train_response(
                             row,
@@ -136,11 +142,10 @@ def fetch_trains_between_with_alternatives(
                             to_code,
                             from_region,
                             to_region,
+                            station_coordinates,
                         )
                         for row in direct_trains
                     ],
-                    from_code,
-                    parsed_schedules,
                 ),
                 "alternative_trains": [],
             }
@@ -177,6 +182,18 @@ def fetch_trains_between_with_alternatives(
                 continue
 
             from_stop, to_stop = regional_match
+            from_stop_code = extract_station_code_from_route_item(from_stop)
+            to_stop_code = extract_station_code_from_route_item(to_stop)
+            needed_codes = [
+                code
+                for code in (from_stop_code, to_stop_code)
+                if code and code not in station_coordinates
+            ]
+            if needed_codes:
+                station_coordinates.update(
+                    fetch_station_coordinates_batch(needed_codes, conn)
+                )
+
             alternative_trains.append(
                 enrich_alternative_train(
                     row,
@@ -187,11 +204,12 @@ def fetch_trains_between_with_alternatives(
                     schedule,
                     from_code,
                     to_code,
+                    station_coordinates,
                 )
             )
 
         return {
-            "direct_trains": sort_trains_by_searched_origin(
+            "direct_trains": sort_direct_trains_by_scheduled_departure_time(
                 [
                     build_direct_train_response(
                         row,
@@ -203,14 +221,13 @@ def fetch_trains_between_with_alternatives(
                         to_code,
                         from_region,
                         to_region,
+                        station_coordinates,
                     )
                     for row in direct_trains
                 ],
-                from_code,
-                parsed_schedules,
             ),
-            "alternative_trains": sort_trains_by_searched_origin(
-                alternative_trains, from_code, parsed_schedules
+            "alternative_trains": sort_alternative_trains_by_approx_distance(
+                alternative_trains
             ),
         }
 
@@ -275,6 +292,55 @@ def sort_trains_by_searched_origin(
         trains,
         key=lambda train: (
             train_origin_priority(train, from_station, parsed_schedules),
+            str(train.get("train_no") or train.get("train_number_string") or ""),
+        ),
+    )
+
+
+def get_direct_train_departure_sort_key(train: Dict[str, Any]) -> Tuple[float, str]:
+    from_station = train.get("from_station") or {}
+    departure_minutes = parse_time_to_minutes(
+        from_station.get("scheduled_departure_time")
+    )
+    train_no = str(train.get("train_no") or train.get("train_number_string") or "")
+    if departure_minutes is None:
+        return float("inf"), train_no
+
+    return float(departure_minutes), train_no
+
+
+def sort_direct_trains_by_scheduled_departure_time(
+    trains: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    return sorted(trains, key=get_direct_train_departure_sort_key)
+
+
+def get_station_approx_distance(
+    station_details: Optional[Dict[str, Any]],
+) -> float:
+    if not station_details:
+        return 0.0
+    approx_distance = station_details.get("approx_distance")
+    if approx_distance is None:
+        return float("inf")
+    return float(approx_distance)
+
+
+def get_alternative_train_total_approx_distance(train: Dict[str, Any]) -> float:
+    from_station = train.get("from_station") or train.get("alternative_from_station")
+    to_station = train.get("to_station") or train.get("alternative_to_station")
+    return get_station_approx_distance(from_station) + get_station_approx_distance(
+        to_station
+    )
+
+
+def sort_alternative_trains_by_approx_distance(
+    trains: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    return sorted(
+        trains,
+        key=lambda train: (
+            get_alternative_train_total_approx_distance(train),
             str(train.get("train_no") or train.get("train_number_string") or ""),
         ),
     )
@@ -358,6 +424,19 @@ def build_response_train_row(
     return response
 
 
+def build_station_coordinate_fields(
+    station_code: Optional[str],
+    station_coordinates: Optional[Dict[str, Tuple[float, float]]],
+) -> Dict[str, float]:
+    if not station_code or not station_coordinates:
+        return {}
+    coords = station_coordinates.get(station_code)
+    if not coords:
+        return {}
+    lat, lon = coords
+    return {"lat": lat, "lon": lon}
+
+
 def build_direct_train_response(
     train_row: Dict[str, Any],
     schedule: List[Any],
@@ -365,6 +444,7 @@ def build_direct_train_response(
     to_station: str,
     from_region: Optional[str] = None,
     to_region: Optional[str] = None,
+    station_coordinates: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> Dict[str, Any]:
     from_stop, to_stop = get_route_stops_for_segment(schedule, from_station, to_station)
     journey_metrics = build_journey_segment_metrics(from_stop, to_stop)
@@ -378,11 +458,17 @@ def build_direct_train_response(
     )
     if from_stop:
         response["from_station"] = build_alternative_from_station_details(
-            from_stop, from_region
+            from_stop,
+            from_region,
+            approx_distance=0.0,
+            station_coordinates=station_coordinates,
         )
     if to_stop:
         response["to_station"] = build_alternative_to_station_details(
-            to_stop, to_region
+            to_stop,
+            to_region,
+            approx_distance=0.0,
+            station_coordinates=station_coordinates,
         )
     return response
 
@@ -593,10 +679,14 @@ def get_route_stops_for_segment(
 
 
 def build_alternative_to_station_details(
-    station: Dict[str, Any], region: Optional[str]
+    station: Dict[str, Any],
+    region: Optional[str],
+    approx_distance: Optional[float] = None,
+    station_coordinates: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> Dict[str, Any]:
-    return {
-        "station_code": extract_station_code_from_route_item(station),
+    station_code = extract_station_code_from_route_item(station)
+    details = {
+        "station_code": station_code,
         "station_name": extract_station_name(station),
         "region": region,
         "scheduled_arrival_time": get_scheduled_arrival_time(station),
@@ -605,13 +695,23 @@ def build_alternative_to_station_details(
         "day_count": station.get("dayCount") or station.get("day_count"),
         "scheduled_departure_time": get_scheduled_departure_time(station),
     }
+    details.update(
+        build_station_coordinate_fields(station_code, station_coordinates)
+    )
+    if approx_distance is not None:
+        details["approx_distance"] = approx_distance
+    return details
 
 
 def build_alternative_from_station_details(
-    station: Dict[str, Any], region: Optional[str]
+    station: Dict[str, Any],
+    region: Optional[str],
+    approx_distance: Optional[float] = None,
+    station_coordinates: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> Dict[str, Any]:
-    return {
-        "station_code": extract_station_code_from_route_item(station),
+    station_code = extract_station_code_from_route_item(station)
+    details = {
+        "station_code": station_code,
         "station_name": extract_station_name(station),
         "region": region,
         "scheduled_departure_time": get_scheduled_departure_time(station),
@@ -619,6 +719,12 @@ def build_alternative_from_station_details(
         "distance": get_station_distance(station),
         "day_count": station.get("dayCount") or station.get("day_count"),
     }
+    details.update(
+        build_station_coordinate_fields(station_code, station_coordinates)
+    )
+    if approx_distance is not None:
+        details["approx_distance"] = approx_distance
+    return details
 
 
 def enrich_alternative_train(
@@ -630,11 +736,13 @@ def enrich_alternative_train(
     schedule: List[Any],
     searched_from_station: str,
     searched_to_station: str,
+    station_coordinates: Optional[Dict[str, Tuple[float, float]]] = None,
 ) -> Dict[str, Any]:
     from_stop_code = extract_station_code_from_route_item(from_stop)
     to_stop_code = extract_station_code_from_route_item(to_stop)
     searched_from_code = normalize_station_code(searched_from_station)
     searched_to_code = normalize_station_code(searched_to_station)
+    coords = station_coordinates or {}
     journey_metrics = build_journey_segment_metrics(from_stop, to_stop)
     enriched = build_response_train_row(
         train_row,
@@ -647,10 +755,28 @@ def enrich_alternative_train(
         scheduled_travel_time=journey_metrics.get("scheduled_travel_time"),
     )
 
+    if from_stop_code != searched_from_code:
+        from_approx_distance = geographic_distance_km(
+            coords.get(searched_from_code),
+            coords.get(from_stop_code),
+        )
+    else:
+        from_approx_distance = 0.0
+
+    if to_stop_code != searched_to_code:
+        to_approx_distance = geographic_distance_km(
+            coords.get(searched_to_code),
+            coords.get(to_stop_code),
+        )
+    else:
+        to_approx_distance = 0.0
+
     from_station_details = build_alternative_from_station_details(
-        from_stop, from_region
+        from_stop, from_region, from_approx_distance, coords
     )
-    to_station_details = build_alternative_to_station_details(to_stop, to_region)
+    to_station_details = build_alternative_to_station_details(
+        to_stop, to_region, to_approx_distance, coords
+    )
 
     if from_stop_code == searched_from_code:
         enriched["from_station"] = from_station_details
